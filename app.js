@@ -191,25 +191,43 @@ app.post('/login/callback',
 );
 
 app.get('/profile', ensureAuthenticated, (req, res) => {
-  const decodedAssertion = req.session.decodedAssertion || {};
-  const groups = decodedAssertion.groups || [];
-  const hasGroupClaim = Array.isArray(groups) && groups.length > 0;
-  
-  res.render('profile', {
-    isAuthenticated: true,
-    user: {
-      name: req.user.displayName || req.user.nameID || 'User',
-      username: req.user.nameID || req.user.email || 'Unknown'
-    },
-    token: {
-      accessToken: 'SAML does not use access tokens',
-      idToken: 'See decoded assertion below',
-      decoded: JSON.stringify(decodedAssertion, null, 2)
-    },
-    hasGroupClaim: hasGroupClaim,
-    groups: groups
+    const decodedAssertion = req.session.decodedAssertion || {};
+    const attributes = decodedAssertion.attributes || {};
+    const groups = decodedAssertion.groups || [];
+    const hasGroupClaim = Array.isArray(groups) && groups.length > 0;
+    
+    // Extract display name and username from SAML attributes
+    // Look for common claim formats for these attributes
+    const displayName = 
+      attributes['http://schemas.microsoft.com/identity/claims/displayname'] ||
+      attributes['displayName'] ||
+      attributes['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/displayname'] ||
+      req.user.displayName ||
+      'Unknown User';
+      
+    const username = 
+      attributes['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'] ||
+      attributes['name'] ||
+      attributes['http://schemas.microsoft.com/identity/claims/name'] ||
+      req.user.nameID ||
+      req.user.email ||
+      'Unknown';
+    
+    res.render('profile', {
+      isAuthenticated: true,
+      user: {
+        name: displayName,
+        username: username
+      },
+      token: {
+        accessToken: 'SAML does not use access tokens',
+        idToken: 'See decoded assertion below',
+        decoded: JSON.stringify(decodedAssertion, null, 2)
+      },
+      hasGroupClaim: hasGroupClaim,
+      groups: groups
+    });
   });
-});
 
 app.get('/logout', (req, res) => {
   req.logout(function(err) {
