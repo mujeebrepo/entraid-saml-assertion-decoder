@@ -60,22 +60,33 @@ passport.deserializeUser(function(user, done) {
   done(null, user);
 });
 
-// Function to decode SAML assertion
+// Function to decode SAML assertion with proper namespace handling
 function decodeSamlAssertion(samlResponse) {
   try {
     // Parse the XML
     const doc = new xmldom.DOMParser().parseFromString(samlResponse);
     
-    // Extract the base64 encoded assertion
-    const assertion = xpath.select("//saml:Assertion", doc, true);
+    // Define the namespaces used in SAML documents
+    const namespaces = {
+      samlp: 'urn:oasis:names:tc:SAML:2.0:protocol',
+      saml: 'urn:oasis:names:tc:SAML:2.0:assertion',
+      ds: 'http://www.w3.org/2000/09/xmldsig#',
+      xenc: 'http://www.w3.org/2001/04/xmlenc#'
+    };
+    
+    // Create a namespace resolver for xpath
+    const select = xpath.useNamespaces(namespaces);
+    
+    // Extract the assertion element using namespaces
+    const assertionNode = select("//saml:Assertion", doc)[0];
     
     // Extract all attributes
     const attributes = {};
-    const attributeNodes = xpath.select("//saml:Attribute", doc);
+    const attributeNodes = select("//saml:Attribute", doc);
     
     attributeNodes.forEach(attr => {
       const name = attr.getAttribute('Name');
-      const valueNodes = xpath.select("saml:AttributeValue/text()", attr);
+      const valueNodes = select("saml:AttributeValue/text()", attr);
       
       if (valueNodes.length === 1) {
         attributes[name] = valueNodes[0].nodeValue;
@@ -84,28 +95,44 @@ function decodeSamlAssertion(samlResponse) {
       }
     });
     
-    // Extract subject information
-    const subject = xpath.select("string(//saml:Subject/saml:NameID)", doc);
+    // Extract subject information (nameID)
+    const subjectNode = select("string(//saml:Subject/saml:NameID)", doc);
     
     // Extract groups specifically
-    const groupsAttribute = xpath.select("//saml:Attribute[@Name='http://schemas.microsoft.com/ws/2008/06/identity/claims/groups' or @Name='groups']", doc);
+    const groupsAttribute = select("//saml:Attribute[@Name='http://schemas.microsoft.com/ws/2008/06/identity/claims/groups' or @Name='groups']", doc);
     let groups = [];
     
     if (groupsAttribute.length > 0) {
-      const groupValues = xpath.select("saml:AttributeValue/text()", groupsAttribute[0]);
+      const groupValues = select("saml:AttributeValue/text()", groupsAttribute[0]);
       groups = groupValues.map(node => node.nodeValue);
     }
     
     // Format the decoded data
     return {
-      subject,
+      subject: subjectNode,
       attributes,
       groups,
-      raw: assertion ? assertion.toString() : 'No assertion found'
+      raw: assertionNode ? assertionNode.toString() : 'No assertion found'
     };
   } catch (error) {
     console.error('Error decoding SAML assertion:', error);
-    return { error: 'Failed to decode SAML assertion' };
+    console.error('Error details:', error.stack);
+    return { error: `Failed to decode SAML assertion: ${error.message}` };
+  }
+}
+
+// Helper function to print the raw SAML response for debugging
+function debugSamlResponse(samlResponse) {
+  try {
+    const decoded = Buffer.from(samlResponse, 'base64').toString();
+    console.log('Decoded SAML Response:');
+    console.log('--------------------------------------------------');
+    console.log(decoded.substring(0, 1000) + '...'); // Print first 1000 chars to avoid overwhelming logs
+    console.log('--------------------------------------------------');
+    return decoded;
+  } catch (error) {
+    console.error('Error decoding base64 SAML response:', error);
+    return null;
   }
 }
 
@@ -143,11 +170,19 @@ app.post('/login/callback',
     // Store the decoded assertion if SAMLResponse exists
     if (req.body && req.body.SAMLResponse) {
       try {
-        req.session.decodedAssertion = decodeSamlAssertion(
-          Buffer.from(req.body.SAMLResponse, 'base64').toString()
-        );
+        // First debug the raw response
+        const decodedSaml = debugSamlResponse(req.body.SAMLResponse);
+        
+        if (decodedSaml) {
+          // Then decode the assertion
+          req.session.decodedAssertion = decodeSamlAssertion(decodedSaml);
+        }
       } catch (error) {
-        console.error('Error decoding SAML response:', error);
+        console.error('Error processing SAML response:', error);
+        req.session.decodedAssertion = { 
+          error: 'Failed to process SAML response',
+          errorDetails: error.message 
+        };
       }
     }
     
