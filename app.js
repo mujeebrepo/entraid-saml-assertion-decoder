@@ -15,16 +15,25 @@ const port = process.env.PORT || 3000;
 app.use(express.static('public'));
 app.set('view engine', 'ejs');
 
-// Set up session
+// Set up session - USE A MORE ROBUST STORE FOR PRODUCTION
 app.use(session({
   secret: process.env.SESSION_SECRET || 'saml-decoder-secret',
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+  cookie: {
+    // More secure cookie settings
+    secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
 }));
 
 // Initialize Passport
 app.use(passport.initialize());
 app.use(passport.session());
+
+// Parse URL-encoded bodies
+app.use(express.urlencoded({ extended: true }));
 
 // Configure SAML Strategy
 const samlStrategy = new SamlStrategy({
@@ -33,9 +42,10 @@ const samlStrategy = new SamlStrategy({
   issuer: process.env.SAML_ISSUER,
   cert: process.env.SAML_CERT || fs.readFileSync(path.join(__dirname, 'certs', 'idp-cert.pem'), 'utf8'),
   identifierFormat: 'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent',
-  validateInResponseTo: true,
+  validateInResponseTo: false, // Disable response validation to prevent redirect loops
   disableRequestedAuthnContext: true
 }, function(profile, done) {
+  // Process the SAML assertion here
   return done(null, profile);
 });
 
@@ -118,19 +128,27 @@ app.get('/login', passport.authenticate('saml', {
 }));
 
 app.post('/login/callback',
+  function(req, res, next) {
+    // Log the incoming request to help with debugging
+    console.log('Received callback with SAMLResponse present:', !!req.body.SAMLResponse);
+    next();
+  },
   passport.authenticate('saml', { 
     failureRedirect: '/',
     failureFlash: true 
   }),
   function(req, res) {
-    // Get the SAML response from the strategy
-    const samlResponse = req.body.SAMLResponse;
+    console.log('Authentication successful, user:', req.user?.nameID);
     
-    // Store the decoded assertion
-    if (samlResponse) {
-      req.session.decodedAssertion = decodeSamlAssertion(
-        Buffer.from(samlResponse, 'base64').toString()
-      );
+    // Store the decoded assertion if SAMLResponse exists
+    if (req.body && req.body.SAMLResponse) {
+      try {
+        req.session.decodedAssertion = decodeSamlAssertion(
+          Buffer.from(req.body.SAMLResponse, 'base64').toString()
+        );
+      } catch (error) {
+        console.error('Error decoding SAML response:', error);
+      }
     }
     
     res.redirect('/profile');
