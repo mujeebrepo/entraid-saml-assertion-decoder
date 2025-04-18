@@ -9,6 +9,7 @@ A Node.js application that authenticates users with Microsoft Entra ID (formerly
 - Specifically check for and display group claims in the assertion
 - Simple web interface to view decoded assertion data
 - Exposure of service provider metadata for easy configuration
+- Optional SAML request signing for enhanced security
 
 ## Prerequisites
 
@@ -52,7 +53,7 @@ saml-assertion-decoder/
 2. Select "SAML" as the sign-on method
 3. In "Basic SAML Configuration":
    - Set Identifier (Entity ID) to the value of your SAML_ISSUER (e.g., `urn:example:saml-decoder`)
-   - Set Reply URL (Assertion Consumer Service URL) to your callback URL (e.g., `http://localhost:3002/login/callback`)
+   - Set Reply URL (Assertion Consumer Service URL) to your callback URL (e.g., `http://localhost:3000/login/callback`)
 4. In "User Attributes & Claims":
    - Ensure your required attributes are configured
    - Add group claims by clicking "Edit" under Groups returned in claim
@@ -123,6 +124,40 @@ npm start
 2. Click "Sign in with Microsoft"
 3. After authentication, you'll see the decoded SAML assertion with group claims if configured properly
 
+## Enabling SAML Request Signing
+
+SAML request signing adds an extra layer of security by allowing Entra ID to verify that authentication requests are genuinely coming from your application. To enable this:
+
+1. Uncomment the request signing configuration in app.js:
+```javascript
+// privateCert: process.env.SAML_SIGNING_KEY || fs.readFileSync(path.join(__dirname, 'certs', 'sp-key.pem'), 'utf8'),
+// signatureAlgorithm: 'sha256',
+```
+
+2. Make sure your SP certificate and private key are available either as environment variables or in the certs directory
+
+3. Update your application in Entra ID:
+   - Go to "Enterprise applications" > Your App > "Single sign-on"
+   - In the "SAML Signing Certificate" section, upload your service provider certificate (sp-cert.pem)
+   - Enable the option "Sign SAML request" if available
+
+The application will now sign all SAML requests with your private key, and Entra ID will verify the signature using your public certificate.
+
+## Advanced Configuration: Encrypted Assertions
+
+For additional security, you can configure Entra ID to encrypt SAML assertions:
+
+1. Uncomment the encryption configuration in app.js:
+```javascript
+// decryptionPvk: process.env.SAML_SIGNING_KEY || fs.readFileSync(path.join(__dirname, 'certs', 'sp-key.pem'), 'utf8'),
+// wantAssertionsEncrypted: true,
+```
+
+2. In Entra ID, configure assertion encryption:
+   - Go to "Enterprise applications" > Your App > "Single sign-on"
+   - In the SAML configuration, look for encryption options
+   - Upload your service provider certificate for encryption
+
 ## Troubleshooting Group Claims in SAML
 
 If your groups aren't showing up in the SAML assertion, check the following:
@@ -154,6 +189,7 @@ This application is for demonstration purposes only. In a production environment
 5. Use secure, randomly generated secrets
 6. Consider certificate rotation practices
 7. Configure appropriate attribute encryption
+8. Enable SAML request signing for authentication integrity
 
 ## License
 

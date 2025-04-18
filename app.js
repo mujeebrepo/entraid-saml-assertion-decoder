@@ -8,6 +8,7 @@ const xmldom = require('@xmldom/xmldom');
 const xpath = require('xpath');
 const fs = require('fs');
 const path = require('path');
+const bodyParser = require('body-parser');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -15,26 +16,46 @@ const port = process.env.PORT || 3000;
 app.use(express.static('public'));
 app.set('view engine', 'ejs');
 
+// Add body parser middleware to handle POST requests
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+
 // Set up session
 app.use(session({
   secret: process.env.SESSION_SECRET || 'saml-decoder-secret',
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+  cookie: { 
+    secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
 }));
 
 // Initialize Passport
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Register namespaces for XPath
+const select = xpath.useNamespaces({
+  samlp: 'urn:oasis:names:tc:SAML:2.0:protocol',
+  saml: 'urn:oasis:names:tc:SAML:2.0:assertion'
+});
+
 // Configure SAML Strategy
 const samlStrategy = new SamlStrategy({
   callbackUrl: process.env.CALLBACK_URL || `http://localhost:${port}/login/callback`,
   entryPoint: `https://login.microsoftonline.com/${process.env.TENANT_ID}/saml2`,
-  issuer: process.env.SAML_ISSUER,
-  cert: process.env.SAML_CERT || fs.readFileSync(path.join(__dirname, 'certs', 'idp-cert.pem'), 'utf8'),
+  issuer: process.env.SAML_ISSUER || 'urn:example:saml-decoder',
+  cert: process.env.SAML_CERT || (fs.existsSync(path.join(__dirname, 'certs', 'idp-cert.pem')) ? 
+         fs.readFileSync(path.join(__dirname, 'certs', 'idp-cert.pem'), 'utf8') : undefined),
   identifierFormat: 'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent',
   validateInResponseTo: true,
-  disableRequestedAuthnContext: true
+  disableRequestedAuthnContext: true,
+  acceptedClockSkewMs: 300000, // 5 minutes clock skew acceptable
+  
+  // === Request Signing Configuration (Uncomment to enable) ===
+  // privateCert: process.env.SAML_SIGNING_KEY || fs.readFileSync(path.join(__dirname, 'certs', 'sp-key.pem'), 'utf8'),
+  // signatureAlgorithm: 'sha256',
 }, function(profile, done) {
   return done(null, profile);
 });
@@ -53,19 +74,26 @@ passport.deserializeUser(function(user, done) {
 // Function to decode SAML assertion
 function decodeSamlAssertion(samlResponse) {
   try {
+    console.log("Decoding SAML response...");
+    
     // Parse the XML
     const doc = new xmldom.DOMParser().parseFromString(samlResponse);
     
-    // Extract the base64 encoded assertion
-    const assertion = xpath.select("//saml:Assertion", doc, true);
+    // Extract the assertion
+    const assertion = select("//saml:Assertion", doc)[0];
+    
+    if (!assertion) {
+      console.error("No SAML assertion found in response");
+      return { error: "No assertion found in SAML response" };
+    }
     
     // Extract all attributes
     const attributes = {};
-    const attributeNodes = xpath.select("//saml:Attribute", doc);
+    const attributeNodes = select("//saml:Attribute", doc);
     
     attributeNodes.forEach(attr => {
       const name = attr.getAttribute('Name');
-      const valueNodes = xpath.select("saml:AttributeValue/text()", attr);
+      const valueNodes = select("saml:AttributeValue/text()", attr);
       
       if (valueNodes.length === 1) {
         attributes[name] = valueNodes[0].nodeValue;
@@ -75,14 +103,14 @@ function decodeSamlAssertion(samlResponse) {
     });
     
     // Extract subject information
-    const subject = xpath.select("string(//saml:Subject/saml:NameID)", doc);
+    const subject = select("string(//saml:Subject/saml:NameID)", doc);
     
     // Extract groups specifically
-    const groupsAttribute = xpath.select("//saml:Attribute[@Name='http://schemas.microsoft.com/ws/2008/06/identity/claims/groups' or @Name='groups']", doc);
+    const groupsAttribute = select("//saml:Attribute[@Name='http://schemas.microsoft.com/ws/2008/06/identity/claims/groups' or @Name='groups']", doc);
     let groups = [];
     
     if (groupsAttribute.length > 0) {
-      const groupValues = xpath.select("saml:AttributeValue/text()", groupsAttribute[0]);
+      const groupValues = select("saml:AttributeValue/text()", groupsAttribute[0]);
       groups = groupValues.map(node => node.nodeValue);
     }
     
@@ -95,7 +123,7 @@ function decodeSamlAssertion(samlResponse) {
     };
   } catch (error) {
     console.error('Error decoding SAML assertion:', error);
-    return { error: 'Failed to decode SAML assertion' };
+    return { error: 'Failed to decode SAML assertion: ' + error.message };
   }
 }
 
@@ -117,27 +145,49 @@ app.get('/login', passport.authenticate('saml', {
   failureFlash: true
 }));
 
-app.post('/login/callback',
+app.post('/login/callback', 
+  function(req, res, next) {
+    // Log that we received a callback
+    console.log("Received SAML response at /login/callback");
+    next();
+  },
   passport.authenticate('saml', { 
     failureRedirect: '/',
     failureFlash: true 
   }),
   function(req, res) {
-    // Get the SAML response from the strategy
+    console.log("Authentication successful");
+    
+    // Get the SAML response from the request body
     const samlResponse = req.body.SAMLResponse;
     
-    // Store the decoded assertion
     if (samlResponse) {
-      req.session.decodedAssertion = decodeSamlAssertion(
-        Buffer.from(samlResponse, 'base64').toString()
-      );
+      try {
+        // Base64 decode the SAML response
+        const decodedString = Buffer.from(samlResponse, 'base64').toString();
+        
+        // Parse and extract information from the SAML assertion
+        const decodedAssertion = decodeSamlAssertion(decodedString);
+        
+        // Store in session
+        req.session.decodedAssertion = decodedAssertion;
+        
+        console.log("Decoded SAML assertion and stored in session");
+      } catch (err) {
+        console.error("Error processing SAML response:", err);
+      }
+    } else {
+      console.error("No SAMLResponse found in request body");
     }
     
+    // Redirect to profile page after successful authentication
     res.redirect('/profile');
   }
 );
 
 app.get('/profile', ensureAuthenticated, (req, res) => {
+  console.log("Rendering profile page");
+  
   const decodedAssertion = req.session.decodedAssertion || {};
   const groups = decodedAssertion.groups || [];
   const hasGroupClaim = Array.isArray(groups) && groups.length > 0;
@@ -145,7 +195,7 @@ app.get('/profile', ensureAuthenticated, (req, res) => {
   res.render('profile', {
     isAuthenticated: true,
     user: {
-      name: req.user.displayName || req.user.nameID || 'User',
+      name: req.user.nameID || req.user.displayName || 'User',
       username: req.user.nameID || req.user.email || 'Unknown'
     },
     token: {
@@ -160,21 +210,44 @@ app.get('/profile', ensureAuthenticated, (req, res) => {
 
 app.get('/logout', (req, res) => {
   req.logout(function(err) {
-    if (err) { return next(err); }
-    req.session.destroy();
-    res.redirect('/');
+    if (err) { 
+      console.error("Error during logout:", err);
+      return res.status(500).send("Error during logout"); 
+    }
+    req.session.destroy(function(err) {
+      if (err) {
+        console.error("Error destroying session:", err);
+      }
+      res.redirect('/');
+    });
   });
 });
 
 // Get SAML metadata for application registration
 app.get('/metadata', function(req, res) {
   res.type('application/xml');
-  res.status(200).send(
-    samlStrategy.generateServiceProviderMetadata(
-      process.env.SAML_SIGNING_CERT || fs.readFileSync(path.join(__dirname, 'certs', 'sp-cert.pem'), 'utf8'),
-      process.env.SAML_SIGNING_KEY || fs.readFileSync(path.join(__dirname, 'certs', 'sp-key.pem'), 'utf8')
-    )
-  );
+  
+  try {
+    const cert = process.env.SAML_SIGNING_CERT || 
+                (fs.existsSync(path.join(__dirname, 'certs', 'sp-cert.pem')) ? 
+                 fs.readFileSync(path.join(__dirname, 'certs', 'sp-cert.pem'), 'utf8') : undefined);
+                 
+    const key = process.env.SAML_SIGNING_KEY || 
+               (fs.existsSync(path.join(__dirname, 'certs', 'sp-key.pem')) ? 
+                fs.readFileSync(path.join(__dirname, 'certs', 'sp-key.pem'), 'utf8') : undefined);
+    
+    const metadata = samlStrategy.generateServiceProviderMetadata(cert, key);
+    res.status(200).send(metadata);
+  } catch (err) {
+    console.error("Error generating metadata:", err);
+    res.status(500).send("Error generating metadata: " + err.message);
+  }
+});
+
+// Error handling
+app.use(function(err, req, res, next) {
+  console.error(err.stack);
+  res.status(500).send('Something broke! ' + err.message);
 });
 
 app.listen(port, () => {
