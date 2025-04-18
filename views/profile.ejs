@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SAML Info - SAML Assertion Decoder</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css">
+</head>
+<body>
+  <div class="container mt-5">
+    <div class="row">
+      <div class="col-md-10 offset-md-1">
+        <div class="card mb-4">
+          <div class="card-header bg-primary text-white">
+            <h2>Authentication Successful</h2>
+          </div>
+          <div class="card-body">
+            <h3>User Information</h3>
+            <p><strong>Name:</strong> <%= user.name %></p>
+            <p><strong>Username:</strong> <%= user.username %></p>
+          </div>
+        </div>
+
+        <div class="card mb-4">
+          <div class="card-header <%= hasGroupClaim ? 'bg-success' : 'bg-warning' %> text-white">
+            <h3>Group Claims Status</h3>
+          </div>
+          <div class="card-body">
+            <% if (hasGroupClaim) { %>
+              <div class="alert alert-success">
+                <strong>Group claims found in SAML Assertion!</strong>
+              </div>
+              <h4>Groups:</h4>
+              <ul>
+                <% groups.forEach(function(group) { %>
+                  <li><%= group %></li>
+                <% }); %>
+              </ul>
+            <% } else { %>
+              <div class="alert alert-warning">
+                <strong>No group claims found in token.</strong> You may need to configure your app registration to include groups in token claims.
+              </div>
+            <% } %>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header bg-dark text-white">
+            <h3>Decoded ID Token</h3>
+          </div>
+          <div class="card-body">
+            <pre class="bg-light p-3 rounded"><code><%= token.decoded %></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
