@@ -15,6 +15,7 @@ const port = process.env.PORT || 3000;
 // Configure express
 app.use(express.static('public'));
 app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views')); // Explicitly set views directory
 
 // Add body parser middleware to handle POST requests
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -57,6 +58,11 @@ const samlStrategy = new SamlStrategy({
   // privateCert: process.env.SAML_SIGNING_KEY || fs.readFileSync(path.join(__dirname, 'certs', 'sp-key.pem'), 'utf8'),
   // signatureAlgorithm: 'sha256',
 }, function(profile, done) {
+  // Store the SAML response for later extraction
+  if (profile) {
+    // Store the raw SAML response if available in the profile
+    profile._samlRaw = profile._saml || {};
+  }
   return done(null, profile);
 });
 
@@ -140,31 +146,27 @@ app.get('/', (req, res) => {
   res.render('index', { isAuthenticated: req.isAuthenticated() });
 });
 
+// Initiate SAML authentication
 app.get('/login', passport.authenticate('saml', {
   failureRedirect: '/',
   failureFlash: true
 }));
 
+// Handle SAML callback
 app.post('/login/callback', 
-  function(req, res, next) {
-    // Log that we received a callback
-    console.log("Received SAML response at /login/callback");
-    next();
-  },
   passport.authenticate('saml', { 
     failureRedirect: '/',
-    failureFlash: true 
+    failureFlash: true,
+    session: true
   }),
   function(req, res) {
     console.log("Authentication successful");
     
-    // Get the SAML response from the request body
-    const samlResponse = req.body.SAMLResponse;
-    
-    if (samlResponse) {
+    // Store the SAML response for decoding
+    if (req.body.SAMLResponse) {
       try {
         // Base64 decode the SAML response
-        const decodedString = Buffer.from(samlResponse, 'base64').toString();
+        const decodedString = Buffer.from(req.body.SAMLResponse, 'base64').toString();
         
         // Parse and extract information from the SAML assertion
         const decodedAssertion = decodeSamlAssertion(decodedString);
@@ -180,8 +182,14 @@ app.post('/login/callback',
       console.error("No SAMLResponse found in request body");
     }
     
-    // Redirect to profile page after successful authentication
-    res.redirect('/profile');
+    // Save the session before redirecting
+    req.session.save((err) => {
+      if (err) {
+        console.error("Error saving session:", err);
+      }
+      // Redirect to profile page after successful authentication
+      res.redirect('/profile');
+    });
   }
 );
 
